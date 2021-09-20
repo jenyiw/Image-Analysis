@@ -1,0 +1,257 @@
+//Parameters
+tolerance = 3000;
+reqplot = 5;
+filename_ng = "20210512_";
+use_existing = true;
+allhybs = true
+//hyblist = newArray("hyb00","hyb02","hyb04", "hyb06", "hyb08");
+//hyblist = newArray("0", "4", "8", "12", "16");
+microscope = "ELS";
+MIP = false;
+
+//Get basic information from files
+run("Clear Results");
+//outputdir = getDir("Output directory!");
+outputdir = "C:\\Users\\wongjy\\Desktop\\trial\\";
+inputfile = "D:\\ELS Data\\20210512_KMS_L2P4_LPS-20UM_ELS1\\TIF\\hyb00_1\\hyb00_1_MMStack_2-Pos001_001.ome.tif";
+//inputfile = File.openDialog("Input File!");
+inputdir = File.getParent(File.getDirectory(inputfile));
+//will be found from codebook in the future
+open("C:\\Users\\wongjy\\Desktop\\trial\\codebook.csv");
+genelist = Table.getColumn("Gene");
+chnlist = Table.getColumn("Channel");
+codehyb = Table.getColumn("Hyb");
+Array.sort(codehyb, genelist, chnlist);
+
+//Deal with different file formats/naming conventions
+if (microscope == "ELS"){
+	input_eg = File.getName(inputfile);	
+	fov_index = indexOf(input_eg, "MMStack");	
+	fov = substring(input_eg, fov_index);
+	if (allhybs == true){
+	hybfilelist = getFileList(inputdir);
+	print("Found "+hybfilelist.length+" hybs!");
+	hyblist = newArray();
+	for (file=0; file<hybfilelist.length; file++){
+		hyblist = Array.concat(hyblist, substring(hybfilelist[file], 0, hybfilelist[file].length-3));
+}
+}
+}
+else{
+	input_eg = File.getName(inputfile);	
+	fov_index = indexOf(input_eg, "_F");
+	fov_index2 = indexOf(input_eg, ".tif");
+	fov = substring(inputfile, fov_index+1,fov_index2);	
+	if (allhybs == true){
+hybfilelist = getFileList(File.getDirectory(inputfile));
+count = 0;
+for (file=0; file<hybfilelist.length; file++){
+if indexOf(hybfilelist[file], fov) > 0 && endsWith(hybfilelist[file], fov) == 1{
+	if indexOf(hybfilelist[file], "bleach") < 0{
+	hyblist = Array.concat(hyblist, substring(hybfilelist[file], indexOf(hybfilelist[file], "_F")-2, indexOf(hybfilelist[file], "_F")-1));
+	count++;
+	}
+}
+}
+	print("Found "+count+" hybs!");
+}
+}
+
+//Register images
+setBatchMode(true);
+run("Set Measurements...", "area mean standard min centroid median redirect=None decimal=3");
+for (hyb = 0; hyb < hyblist.length; hyb++){
+	print("Starting on gene "+hyblist[hyb]);	
+	stackname = hyblist[hyb];
+	if ((use_existing == true) && (File.exists(outputdir+filename_ng+"_"+hyblist[0]+"_hyb"+hyblist[hyb]+"_"+fov+"_aligned.tif") == 1)){		
+		print("Opening existing registered image!");
+		open(outputdir+filename_ng+"_"+hyblist[0]+"_"+hyblist[hyb]+"_"+fov+"_aligned.tif");
+		rename(stackname);
+	}
+	else{
+	print("Registering stack!");		
+	if (microscope == "ELS"){		
+		open(inputdir+"/"+hyblist[hyb]+"_1/"+hyblist[hyb]+"_1_"+fov);
+		getDimensions(width, height, channels, slices, frames);
+		if (channels>1){
+	run("Deinterleave", "how=1");
+	winname = getTitle();
+	run("Stack Splitter", "number=3");
+	close(winname);	
+	title = getList("image.titles");
+	Array.sort(title);
+	constr = "open ";
+	for (img=0; img<title.length;img++){
+		constr += "image"+(img+1)+"=["+title[img]+"] ";
+	}
+	constr += "image"+(img+2)+"=[--None--]";
+	run("Concatenate...", constr);
+	run("Re-order Hyperstack ...", "channels=[Frames (t)] slices=[Slices (z)] frames=[Channels (c)]");	
+	}
+	}
+	else{		
+		open(inputdir+"hyb_IR800_cy5_Al594_785_iRFP_CF40_Sona1_637_Cy5_CF40_Sona1_561_RFP_CF40_Sona1_"+hyblist[hyb]+fov);
+	}
+	wait(10);
+	rename(stackname);	
+	getDimensions(width, height, channels, slices, frames);	
+	selectWindow(stackname);
+	run("Z Project...", "projection=[Max Intensity]");
+	if (hyb==0){		
+		rename("Tempimg");	
+	}
+	else{
+	selectImage("Tempimg");
+	if (channels > 1){
+	Stack.setChannel(1);
+	}
+	run("FD Math...", "image1=[MAX_"+stackname+"] operation=Correlate image2=[Tempimg] result=Result do" );
+	wait(1000);
+	getRawStatistics( n, mn, mi, mx );
+	run( "Find Maxima...", "noise=" + d2s( mx, 9 ) + " output=[Point Selection]" );
+	getSelectionCoordinates(x, y);
+	close("Result");	
+	selectImage(stackname);
+	run( "Translate...", "x=" + ((height/2)-x[0]) + " y=" + ((height/2)-y[0]) + " interpolation=None stack" );
+	saveAs("tiff", outputdir+filename_ng+"_"+hyblist[0]+"_"+hyblist[hyb]+"_"+fov+"_aligned.tif");
+	rename(stackname);
+	close("MAX_"+stackname);
+	close("peaks");	
+	}
+	}
+	selectWindow(stackname);
+  
+/////Find spots //////
+	if (MIP == true){
+		run("Z Project...", "projection=[Max Intensity]");
+		MIP_label = "max";
+	}
+	else{
+		MIP_label = "";
+	}
+	MIPname = getTitle();
+	if (channels>1){
+	run("Split Channels");
+	}
+	else{
+		rename("C1-"+MIPname);
+	}
+	for (hyb_i=0; hyb_i<codehyb.length; hyb_i++){
+		if (codehyb[hyb_i] == hyb){
+			List.set(chnlist[hyb_i], genelist[hyb_i]);
+		}
+	}
+	chnarray = newArray("C1-", "C2-", "C3-");
+	for (chn_i=0; chn_i<List.size;chn_i++){
+		if (List.indexOf(chn_i+1)<0){
+			continue;	
+		}
+	chn = chn_i+1;
+	gene = List.get(chn);
+	filename = filename_ng+gene;		
+	genechn = chnarray[chn-1];
+	chnarray[chn_i] = "Z";
+	Array.sort(chnarray);
+	chnname = genechn+MIPname;
+  
+
+	if ((use_existing == true) && (File.exists(outputdir+filename+"_"+hyblist[hyb]+".csv") == 1)){
+	print("Loading csv...");
+	open(outputdir+filename+"_"+hyblist[hyb]+"_"+fov+MIP_label+".csv");
+	IJ.renameResults(filename+"_"+hyblist[hyb]+"_"+fov+MIP_label+".csv","Results");		
+		}
+	else{
+	print("Finding points...");
+	selectWindow(chnname);
+	run("Mean 3D...", "radius=2 stack");	
+	run("3D Maxima Finder", "minimmum=0 radiusxy=1.50 radiusz=1.50 noise="+tolerance);
+	saveAs("Results", outputdir+filename+"_"+hyblist[hyb]+"_"+fov+MIP_label+".csv");		
+	}		
+
+	List.clear();
+	
+////////Calculate SNR///////////
+print("Calculating SNR!");
+selectWindow("Results");
+for (i=0;i<nResults; i++){
+	
+}
+
+///////Plot Graphs///////////
+print("Creating plots!");
+if (File.exists(outputdir+"Plots/")!=1){
+	File.makeDirectory(outputdir+"Plots/");
+}
+if (File.exists(outputdir+"Plots/"+gene)!=1){
+	File.makeDirectory(outputdir+"Plots/"+gene);
+} 
+selectWindow("Results");
+plotSNR("V", outputdir+"/Plots/");
+if ((reqplot > 0) && (MIP == false)){
+selectWindow("Results");
+rowind = newArray();
+choosept = true;
+while (choosept == true){
+	selectWindow("Results");
+	rand_rowind = round(random*nResults);
+	rowind = Array.concat(rowind, rand_rowind);
+	if (rowind.length == reqplot){
+		choosept = false;
+	}
+	if (reqplot > nResults){
+		print("Not enough points!");
+		reqplot = nResults;
+	}
+}
+for (pts=0; pts<rowind.length; pts++){
+selectWindow("Results");
+x=parseInt(Table.get("X", rowind[pts]));
+y=parseInt(Table.get("Y", rowind[pts]));
+selectWindow(chnname);
+makeRectangle(x-1, y-1, 2, 2);
+run("Plot Z-axis Profile");
+Plot.setLimitsToFit();
+selectWindow(chnname+"-"+(x-1)+"-"+(y-1));
+Plot.addText(gene+"_"+x+"_"+y, 1,0);
+setJustification("left");
+selectWindow(chnname+"-"+(x-1)+"-"+(y-1));
+Plot.setXYLabels("Z", "Mean Intensity");
+//will not overwrite
+saveAs("Tiff", outputdir+"/Plots/"+gene+"/"+gene+"_"+x+"_"+y+".tif");
+close();
+print("Done with: "+(pts+1)+"plots");
+}
+close("Results");
+}
+print("Done with: "+gene);
+}
+print("Done with: "+hyblist[hyb]);
+}
+print("Done!");
+
+////////Clean windows////////
+
+while (nImages>0) { 
+		selectImage(nImages); 
+        close(); 
+	}
+setBatchMode(false);
+String.resetBuffer();
+exit();
+
+///////Plot more graphs/////////
+
+function plotSNR(yaxis, outputdir){
+selectWindow("Results");
+SNRarray = Table.getColumn(yaxis);
+Array.sort(SNRarray);
+Array.reverse(SNRarray);
+Plot.create("Plot", "Rank", yaxis);
+xarray = Array.getSequence(SNRarray.length);
+Plot.add("curve", xarray, SNRarray);
+Plot.update();
+selectWindow("Plot");
+wait(10);
+saveAs("Tiff", outputdir+"Plot"+"_"+gene+"_"+fov+"_"+yaxis);
+close("Plot_"+gene+"_"+fov+"_"+yaxis+".tif");
+}
