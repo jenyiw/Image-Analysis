@@ -1,0 +1,511 @@
+#This is designed to work with the Oligominer database found here: https://oligopaints.hms.harvard.edu/genome-files/ . This probe design code adds readout sequences and allows the user to choose the number of sequences, location, primers and readout probes required. 
+
+# -*- coding: utf-8 -*-
+"""
+Spyder Editor
+
+This is a temporary script file.
+"""
+
+import os
+import pandas as pd
+import numpy as np
+import itertools
+import re
+import csv
+import time
+import matplotlib.pyplot as plt
+import seaborn as sns
+# for File Dialog Window
+import tkinter as tk
+from tkinter import filedialog
+
+params ={}
+#-------------------------------------------------------------------------------------------------
+#These are the settings for the run
+#Sequences required. If ALL sequences are required within the stated coordinates, put as None
+params['seqreq'] = 100
+
+#output prefix
+params['outputfilename'] = 'Output\outputLib4_'
+#--------------------------------------------------------------------------------------------------
+#These are the files that need to be provided
+#codebook requires gene name and barcode. Blanks should be indicated as BLANK, Non-gene entries should be indicated by MANUAL[chr number]
+params['codebook'] = 'codebookLib4_P4_3genes.csv'
+params['readout'] = 'readoutseqzhuang_v3.txt'
+params['primerfile'] = 'primerLib3.txt'
+
+#-------------------------------------------------------------------------------------------------
+#These are default settings
+
+#Type of probe search from oligominer database, choose between balanced_unique('b_u') or balanced('b') 
+params['typebed'] = 'b'
+#Combinatorial 'comb' or single 'single'
+params['smFISH'] = 'single'
+#primer set follows the sequence in the primer file
+params['primerset'] = 2
+#Spacer between parts of the sequence if required
+spacer = ''
+#readout probes specified in codebook (only applicable for 'single' so far)
+params['RO_choose'] = True
+#use gene database?
+params['use_db'] = False
+#These are the locations that need to be provided if there are any folder changes
+datapath = 'All files'
+genefile = 'listofgenes.xlsx'
+params['primerreadoutpath'] = 'Primers Readouts\\'
+
+#-------------------------------------------------------------------------------------------------
+
+class ProbeDesigner(object):
+	
+	def __init__(self,
+			  outputfilename,
+			  homedir,
+			  codebook,
+			    readout,
+			    primerfile,
+				seqreq,
+			   typebed:str = 'b',
+                smFISH: bool = True,
+				primerset: int = 1,
+                spacer: str = None,
+				RO_choose: bool = True,
+				use_db: bool = False,
+			    datapath: str = 'All files',
+			    genefile: str = 'listofgenes.xlsx',
+			    primerreadoutpath: str = None,
+				verbose: bool = True,
+			  
+			  ):
+	    self.homedir = homedir
+	    self.codebook = codebook
+	    self.verbose = verbose
+	    self.RO_choose = RO_choose
+	    self.typebed = typebed
+	    self.seqreq = seqreq
+	    self.smFISH = smFISH
+	    self.seq_dict = {}
+	    self.header_dict = {}
+	    self.validInd = {}
+	    self.datapath = os.path.join(homedir,datapath)		
+	    self.Statsdata = pd.DataFrame({'Gene Name':'0', 
+                          'Probe Start':0, 
+                          'Probe End':0, 
+                          'Span':0,
+						  'No. of probes':0,
+						  'Probe density':0,
+						  'Initial Probe Start':0,
+						  'Initial Probe End':0,
+						  'Initial span':0,						  
+						  'Initial probes':0,
+						  }, index=[0]) 
+
+	    #read readout, primer probes and encoding list
+	    readoutpath = os.path.join(self.homedir, primerreadoutpath) 
+	    self.readoutheader = self.readfastah(os.path.join(readoutpath, readout))
+	    self.readoutsequence = self.readfastas(os.path.join(readoutpath, readout))
+	    self.primersequence = self.readfastas(os.path.join(readoutpath, primerfile))[(primerset-1)*2:(primerset-1)*2+2]
+	    self.codedata, self.codebookbitslist = self.parsecodebook(codebook, smFISH)
+
+	    #number of genes:
+	    self.outputfilename = outputfilename + self.typebed+'_'+str(len(self.codedata))+'genes_'+str(self.seqreq)
+		
+	    if use_db:
+	        self.gene_db(os.path.join(datapath,genefile))
+	
+	def parsecodebook(self, codebook, smFISH):		
+	    #read codebook
+	    codedata = pd.read_csv(os.path.join(self.homedir,codebook))
+	    codedata = codedata.dropna(axis=1, how='all')
+	    codedata = codedata.dropna(axis=0, how='all')		
+	    if self.verbose:
+	        print('Codebook found: \n', codedata)	
+
+	    codebookbitslist = []
+	    searchbit = 1
+	    for ind in range(len(codedata)):
+    		coderow = codedata.iloc[ind, 6:len(codedata.columns)]
+    		#QC check readout probes
+    		if (len(codedata.columns)-6) >= len(self.readoutsequence):
+	            print('Not enough readout probes, breaking')
+	            break			
+    		if smFISH == False:
+    		    barcode = np.array(coderow.to_numpy())
+    		    bits = tuple(np.where(barcode == searchbit)[0])        
+    		elif smFISH:
+    		    if self.RO_choose:                      
+    		        bits = (coderow.values.tolist()[0], 0)
+    		        if bits[0] not in self.readoutheader:
+	                    print(f'Readout probe {bits} not found!')
+    		    else:
+    		        bits = (ind, 0)
+    		codebookbitslist.append(bits)
+		
+	    if self.RO_choose:
+	        bitscheck = list(x[0] for x in codebookbitslist)
+	        assert len(set(bitscheck)) == len(codedata)
+# 	    if self.verbose:
+    		#print(codebookbitslist)	
+
+																
+	    return codedata, codebookbitslist			
+		
+	def readfastah(self, file):
+	    f = open(file,"r")
+	    list1 = re.findall(r'(?<=>)\w+', f.read())
+	    return list1
+
+	def readfastas(self, file):
+	    list1 = []
+	    f = open(file,"r").readlines()
+	    for line in f:
+	        item = re.sub(r'\W+', '', line)
+	        if not '>' in line:
+	            list1.append(item)
+	    return list1
+
+	def findfastas(self, file, string):
+	    f = open(file,"r")
+	    line = f.readline()
+	    while line:
+	        if string in line:
+	            GeneSeq = f.readline()
+	        else:
+	            line = f.readline()
+	    return GeneSeq
+
+	def findprobefile(self,filename):
+	    #Find file
+	    for root, dirs, files in os.walk(self.datapath):
+		        if filename in files:
+		             print('Found relevant file:', os.path.basename(filename))
+		             probedata = pd.read_csv(os.path.join(self.datapath,filename), sep='\t', comment='t', header=None)
+		             header = ['chrom', 'probeStart', 'probeEnd', 'Sequence', 'score']
+		             probedata.columns = header[:len(probedata.columns)]
+		             if len(probedata) == 0:
+		                 print('Probe database file not found!')
+		                 continue
+		        else:
+		             print('Probe database file not found!')
+		             continue
+
+	    return probedata
+
+	def indexcheck(indexfirst, probesneeded, indexlast, lenprobedata):
+	    if indexfirst < probesneeded:
+	        print('Not enough probes upstream! Taking downstream!')
+	        probesleft = abs(indexfirst - probesneeded)
+	        newindexfirst = 0
+	        newindexlast = indexlast+probesleft 
+	    if indexlast > lenprobedata:
+	        print('Not enough probes downstream! Taking upstream!')
+	        newindexlast = lenprobedata
+	        probesleft = abs(indexlast - lenprobedata)
+	        newindexfirst = indexfirst-probesleft			
+	    return(newindexfirst, newindexlast)
+
+	def revcomp(self, seq):
+	    complement = {'A':'T', 'C':'G', 'T':'A', 'G':'C'}
+	    bases = list(seq)
+	    bases = reversed([complement.get(base,base) for base in bases])
+	    bases = ''.join(bases)
+	    return bases
+	
+	def gene_db(self, genefile):
+	    #read gene information from gene database
+	    df = pd.read_excel(genefile, sheet_name='Sheet1')
+	    tempgenedata = df.loc[df['Gene Name'].isin(self.codedata['name'])]
+	    self.genedata = tempgenedata.reset_index(drop=True)
+		
+	
+	def findprobes(self,
+				use_db):	
+		for j in range(len(self.codedata)):
+		
+		    self.seq_dict[self.codedata.loc[j, 'name']] = []
+		    self.header_dict[self.codedata.loc[j, 'name']] = [] 
+		 
+		    #For blanks
+		    if re.match('blank', self.codedata.loc[j, 'name'].lower()):
+		        print(f'Blank found! Ignoring blank {str(self.codedata.loc[j, "name"])}')
+		        break
+	
+		    #For manual applications
+		    elif use_db == False:
+		        manualchr = (re.findall('[\d\D]+(?=:)', self.codedata.loc[j, 'startPos']))[0]
+		        filename = 'hg38_chr'+manualchr+self.typebed+'.bed'
+		        if self.verbose:
+		            print(f'Manual input found! {str(self.codedata.loc[j, "name"])}')
+		            print('Using file: ', filename)        
+		        print(f'Working on {str(self.codedata.loc[j, "name"])} on chromosome {manualchr}')
+	    
+		    elif use_db:
+		        if len(self.genedata[self.genedata['Gene Name'] == self.codedata.loc[j, 'name']].index.values) > 0:
+		            genedataind = self.genedata[self.genedata['Gene Name'] == self.codedata.loc[j, 'name']].index.values.astype(int)[0]
+		            print('-------------------------------------------------------')
+		            print(f'Working on {str(self.genedata.loc[genedataind, "Gene Name"])}')
+		            filename = 'hg38_chr'+str(self.genedata.loc[genedataind, 'Chromosome'])+self.typebed+'.bed'
+		        else:
+		            print(f'Gene {str(self.genedata.loc[genedataind, "Gene Name"])} not found in database!')
+	    
+		    else:
+		        print('Gene ' +str(self.codedata.loc[j, 'name'])+ ' not found! Breaking')
+		        break
+		    
+			
+		    probedata = self.findprobefile(filename)        
+
+	        
+		    #Find start and end index
+		    if use_db:
+		        codestart = self.genedata.loc[genedataind, 'Gene Start']
+		        codeend = self.genedata.loc[genedataind, 'Gene End'] 
+		    elif re.findall(':', str(self.codedata.loc[j, 'startPos'])):
+		        codestart = int(re.findall('(?<=:)[\d]+',str(self.codedata.loc[j, 'startPos']))[0])
+		        codeend = int(re.findall('(?<=:)\d+',str(self.codedata.loc[j, 'endPos']))[0])
+
+		    if codeend < codestart:
+		        print('Invalid choice of region!')
+		        break
+			 
+		    Flank = str(self.codedata.loc[j,'Flank'])	       
+		    Search = str(self.codedata.loc[j,'Search'])
+	    
+		    #get relevant seq and append
+		    if self.seqreq == None:        
+		        tempdata = probedata.loc[(probedata['probeStart'] >= codestart) & (probedata['probeEnd'] <= codeend)]
+		        tempdata = tempdata.reset_index(drop=True)
+		        self.Statsdata.loc[j, 'Initial probes']=len(tempdata)
+		        self.Statsdata.loc[j, 'Initial span']=int(tempdata.loc[len(tempdata)-1,'probeEnd']) - int(tempdata.loc[0,'probeStart']) 	 				
+		        self.Statsdata.loc[j, 'Initial Probe Start']=str(manualchr)+':'+str(tempdata.loc[0, 'probeStart'])    
+		        self.Statsdata.loc[j, 'Initial Probe End']=str(manualchr)+':'+str(tempdata.loc[len(tempdata)-1, 'probeEnd'])
+
+
+		        validInd = tempdata	
+		        print('Found probes:', len(tempdata))
+		        if len(tempdata) == 0:
+		            self.Statsdata.iloc[j, :]=0            
+		            self.Statsdata.loc[j, 'Gene Name']=self.codedata.loc[j, 'name']
+		            print('--------------------------------------------------------------')
+		            continue
+		    elif self.seqreq != None: 
+		        tempdata = probedata.loc[(probedata['probeStart'] >= codestart) & (probedata['probeEnd'] <= codeend)]				  
+		        indexfirst = int(tempdata.first_valid_index())
+		        indexlast = int(tempdata.last_valid_index())
+		        tempdata = tempdata.reset_index(drop=True)
+		        self.Statsdata.loc[j, 'Initial probes']=len(tempdata)
+		        self.Statsdata.loc[j, 'Initial span']=int(tempdata.loc[len(tempdata)-1,'probeEnd']) - int(tempdata.loc[0,'probeStart']) 					
+		        self.Statsdata.loc[j, 'Initial Probe Start']=str(manualchr)+':'+str(tempdata.loc[0, 'probeStart'])    
+		        self.Statsdata.loc[j, 'Initial Probe End']=str(manualchr)+':'+str(tempdata.loc[len(tempdata)-1, 'probeEnd'])
+		        
+		        print('Found probes:', len(tempdata))
+		        if len(tempdata) < self.seqreq:
+		            probesneeded = self.seqreq-len(tempdata) 
+		            if Flank == 'upstream':
+		                indexfirst = indexfirst-probesneeded					
+		                newindexfirst, newindexlast = self.indexcheck(indexfirst, probesneeded, indexlast, len(probedata))
+		                tempdata = probedata[newindexfirst:newindexlast]
+                    
+		            elif Flank == 'downstream':
+		                indexlast = indexlast+probesneeded
+		                newindexfirst, newindexlast = self.indexcheck(indexfirst, probesneeded, indexlast, len(probedata))
+		                tempdata = probedata[newindexfirst:newindexlast]
+                
+		            elif Flank == 'flank':
+		                numreq = probesneeded/2
+		                indexfirst = indexfirst - numreq
+		                newindexfirst, indexlast = self.indexcheck(indexfirst, probesneeded/2, indexlast, len(probedata))						
+		                indexlast = indexlast + numreq
+		                newindexfirst, newindexlast = self.indexcheck(newindexfirst, probesneeded/2, indexlast, len(probedata))
+		                tempdata = probedata[newindexfirst:newindexlast]						     
+               
+		            validInd = tempdata
+					
+		        if len(tempdata) > self.seqreq: 
+			        if Search == 'start':                
+			            validInd = tempdata.iloc[0:self.seqreq]
+		                    
+			        elif Search == 'end':
+			            validInd = tempdata.iloc[-self.seqreq:-1]
+		                
+			        elif Search == 'middle':              
+			            halfsr = self.seqreq/2
+			            midpoint = (codeend-codestart)/2+codestart
+			            data_mp = tempdata.iloc[(tempdata['probeStart']-midpoint).abs().argsort()[:1]]                
+			            mplist = data_mp.index.tolist()
+			            startscan = mplist[0]-halfsr
+			            try:
+			                density = self.seqreq/(tempdata.loc[round(startscan+self.seqreq),'probeEnd']-tempdata.loc[round(startscan),'probeStart'])*1000
+			            except:
+			                startscan = len(tempdata)/2-halfsr
+			                density = self.seqreq/(tempdata.loc[round(startscan+self.seqreq),'probeEnd']-tempdata.loc[round(startscan),'probeStart'])*1000
+			                print('Gene mid-point too far, using mid-point of valid probes instead!')
+			            if density >= 8 and density < 10:
+			                print('Good density!')
+			            else:
+			                print('Searching for high density window!') 							
+			                initialden = density
+			                startscantemp = 0
+			                highden = startscan
+			                while density < 8.0 or density > 10.0:
+			                    startscantemp = startscantemp+1 
+			                    if startscantemp+self.seqreq > len(tempdata)-1:
+			                        print('Unable to find good window! Reverting to best spot')
+			                        break							                             
+			                    density = self.seqreq/(tempdata.loc[startscantemp+self.seqreq-1,'probeEnd']-tempdata.loc[startscantemp,'probeStart'])*1000
+			                    if abs(density-8.0) < abs(initialden-8.0):
+# 			                        print('Updating density')
+			                        highden = startscantemp
+			                        initialden = density
+			                print('End of density search!')
+			                startscan = highden
+		                    
+			            validInd = tempdata.iloc[round(startscan):round(startscan+self.seqreq)]
+		        else:
+		            validInd = tempdata
+		  
+		    validInd = validInd.reset_index(drop=True)
+		    self.assembleseq(j, manualchr, validInd)
+
+
+			 
+			
+	def assembleseq(self, j, manualchr, validInd):		
+
+		#get bit combinations
+		if self.smFISH == False:
+		    bitslist = list(itertools.combinations(self.codebookbitslist[j],2))
+		elif self.smFISH: 
+		    #For single sequences (requires a tuple):
+		    bitslist = self.codebookbitslist[j]		                                   
+	    					
+		self.Statsdata.loc[j, 'Probe Start']=str(manualchr)+':'+str(validInd.loc[0, 'probeStart'])    
+		self.Statsdata.loc[j, 'Probe End']=str(manualchr)+':'+str(validInd.loc[len(validInd)-1, 'probeEnd'])
+		self.Statsdata.loc[j, 'Gene Name']=self.codedata.loc[j, 'name']
+		self.Statsdata.loc[j, 'Span']=validInd.loc[len(validInd)-1, 'probeEnd']-validInd.loc[0, 'probeStart']
+		self.Statsdata.loc[j, 'No. of probes']=len(validInd) 
+		self.Statsdata.loc[j, 'Probe density']=len(validInd)/self.Statsdata.loc[j, 'Span']*1000
+ 		   
+		if self.RO_choose:
+		    ind_ro = self.readoutheader.index(bitslist[0])            
+		    readoutseq1 = self.readoutsequence[ind_ro]            
+		    readoutseq2 = self.readoutsequence[ind_ro]
+		    readoutheader1 = str(self.readoutheader[ind_ro])
+		    readoutheader2 = str(self.readoutheader[ind_ro])
+		    print('Found RO:', bitslist[0])
+		for q in range(len(validInd)):
+		    group = int(q%len(bitslist))
+		    if self.codedata.loc[j,'Strand'] == 'F':
+		        seqofint = self.revcomp(validInd.loc[q, 'Sequence'])            
+		    else:
+		        seqofint = validInd.loc[q, 'Sequence']
+		    if self.RO_choose != True:
+		        readoutseq1 = (self.readoutsequence[bitslist[group][0]])
+		        readoutseq2 = (self.readoutsequence[bitslist[group][1]])
+		        readoutheader1 = str(self.readoutheader[bitslist[group][0]])
+		        readoutheader2 = str(self.readoutheader[bitslist[group][1]])        
+		    self.seq_dict[self.codedata.loc[j, 'name']].append(self.primersequence[0]+readoutseq1+seqofint+readoutseq2+self.primersequence[1])
+		    #For clean sequence output for BLASTing: 
+		    #Finalsequence.append(validInd.loc[q, 'Sequence'])
+		    self.header_dict[self.codedata.loc[j, 'name']].append(self.codedata.loc[j, 'name']+'_'+str(validInd.loc[q, 'probeStart'])+'_'+readoutheader1+'_'+readoutheader2)
+	    
+		print('Finished probes for ', str(self.codedata.loc[j, 'name']))
+		print(f'Created {q+1} probes!')
+		print('-------------------------------------------------------')
+
+	
+	def writedata(self, 
+			   homedir, 
+			   params,
+			   saveseq: bool = False):		
+		Finalsequence = []
+		Finalheader = []
+		
+		#by default
+		datafile = os.path.join(homedir,self.outputfilename+"_data.csv")
+		outputfile = os.path.join(homedir,self.outputfilename+".csv")
+		
+		if saveseq:
+		    for j in self.seq_dict.keys():
+		        for i in range(len(self.seq_dict[j])):
+		            Finalsequence.append(self.seq_dict[j][i])	                                   
+		            Finalheader.append(self.header_dict[j][i])
+
+		    Finalfile = pd.DataFrame(zip(Finalheader, Finalsequence), columns = ['Header' , 'Sequence'], index = None)
+		    Finalfile.to_csv(outputfile)
+	    					
+		self.Statsdata.to_csv(datafile)
+		if len(self.Statsdata) > 0:
+		    print('Data printed!')
+		else:
+		    print('Data file error!')
+		
+		with open(datafile,'a', newline='') as fd:
+		    fwdprimerdata = ['Forward primer: ' + str(self.primersequence[0])]
+		    revprimerdata = ['Reverse primer: ' + str(self.primersequence[1])]
+		    csv_writer = csv.writer(fd)
+		    csv_writer.writerow(fwdprimerdata)
+		    csv_writer.writerow(revprimerdata)
+		    for key, value in params.items():
+		        csv_writer.writerow([key+':', str(value)])
+		fd.close()
+		
+		print('-------------------------------------------------------')
+		print('Yay! Done!')
+
+
+	def probegraph(self, 
+			   plotgraph: bool = False):		
+		
+		probegraph = pd.DataFrame()
+		
+		if plotgraph:
+		    for j in self.seq_dict.keys():
+		        new_arr = []
+		        initial = int(self.header_dict[j][0].split("_")[-3])
+		        for x in self.header_dict[j]:
+		            new_arr.append(int(x.split("_")[-3])-initial)
+		        if len(new_arr) > len(probegraph):
+		            print('Adding rows!')
+		            probegraph.loc[len(probegraph):len(new_arr)] = 0
+		            print(len(probegraph))
+		        probegraph[j] = new_arr
+			
+		datafile = os.path.join(self.homedir,self.outputfilename+"_graph_{j.jpg")					
+		plt.figure()
+		ax = sns.stripplot(data=probegraph)
+		plt.savefig(datafile)
+		
+#====================================SCRIPT=============================================
+
+if __name__ == "__main__":
+	
+    #
+    # Ask for output directory containing stitched dapi files from all fields of view
+    #
+
+    # root = tk.Tk()
+    # root.withdraw()
+    # params['homedir'] = filedialog.askdirectory(
+    #     title="Choose data directory"
+    # )
+    # root.destroy()	
+	
+    params['homedir'] = "C:\\Users\\Asus\\Trial\\"
+    start_time = time.time()
+    pd_obj = ProbeDesigner(**params)
+	
+    pd_obj.findprobes(params['use_db'])
+	
+    pd_obj.writedata(params['homedir'], 
+					  params,
+					  saveseq=True)
+	
+    # pd_obj.probegraph(plotgraph=True)
+	
+    # match_score = pd_obj.blastcheck()
+    # print(match_score)
+
+
+    print(f"Code took {time.time()-start_time} seconds!")    
