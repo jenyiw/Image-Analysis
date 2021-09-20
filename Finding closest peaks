@@ -1,0 +1,259 @@
+//This ImageJ macro code is to find peaks and calculate the shortest distance between identified peaks of different sets of data. It is much faster in Python. 
+
+////Parameters////
+tolerance = 10000;
+distfilter = 4;
+reqplot = 20;
+gene = "HER2";
+filename = "20210331_Zreg_"+gene;
+use_existing = true;
+zfilter = true;
+hyblist = newArray("00","02","04", "06", "08");
+//hyblist = newArray("0", "4", "8", "12", "16");
+chn = 1;
+microscope = "ELS";
+
+run("Clear Results");
+outputdir = getDir("Output directory!");
+inputfile = File.openDialog("Input File!");
+inputdir = File.getParent(File.getDirectory(inputfile));
+
+//////Opening files with different file formats////
+setBatchMode(true);
+run("Set Measurements...", "area mean standard min centroid median redirect=None decimal=3");
+chnarray = newArray("C1-", "C2-", "C3-");
+genechn = chnarray[chn-1];
+chnarray[chn-1] = "Z";
+Array.sort(chnarray);	
+refstack = genechn+"hyb"+hyblist[0];
+for (hyb = 0; hyb < hyblist.length; hyb++){
+	print("Starting on hyb "+hyblist[hyb]);	
+	stackname = "hyb"+hyblist[hyb];
+	if (microscope == "ELS"){
+		input_eg = File.getName(inputfile);	
+		fov_index = indexOf(input_eg, "MMStack");	
+		fov = substring(input_eg, fov_index);
+	}
+	else{
+	input_eg = File.getName(inputfile);	
+		fov_index = indexOf(input_eg, "_F");
+		fov_index2 = indexOf(input_eg, ".tif");
+		fov = substring(inputfile, fov_index+1,fov_index2);	
+	}
+	if ((use_existing == true) && (File.exists(outputdir+filename+"_"+hyblist[0]+"_hyb"+hyblist[hyb]+"_"+fov+"_aligned.tif") == 1)){		
+		print("Opening existing registered image!");
+		open(outputdir+filename+"_"+hyblist[0]+"_hyb"+hyblist[hyb]+"_"+fov+"_aligned.tif");
+		rename(stackname);
+	}
+	else{
+	print("Registering stack!");		
+	if (microscope == "ELS"){		
+		open(inputdir+"/hyb"+hyblist[hyb]+"_1/hyb"+hyblist[hyb]+"_1_"+fov);
+	run("Deinterleave", "how=1");
+	winname = getTitle();
+	run("Stack Splitter", "number=3");
+	run("Concatenate...", "open image1=[stk_0001_"+winname+"] image2=[stk_0002_"+winname+"] image3=[stk_0003_"+winname+"] image4=[-- None --]");
+	run("Re-order Hyperstack ...", "channels=[Frames (t)] slices=[Slices (z)] frames=[Channels (c)]");	
+	}
+	else{		
+		open(inputdir+"hyb_IR800_cy5_Al594_785_iRFP_CF40_Sona1_637_Cy5_CF40_Sona1_561_RFP_CF40_Sona1_"+hyblist[hyb]+fov);
+	}
+	wait(10);
+	rename(stackname);	
+	getDimensions(width, height, channels, slices, frames);	
+	selectWindow(stackname);
+	run("Z Project...", "projection=[Max Intensity]");
+  
+  ///////Register images////
+	if (hyb==0){		
+		rename("Tempimg");	
+	}
+	else{
+	Stack.setChannel(1);
+	selectImage("Tempimg");
+	Stack.setChannel(1);
+	run("FD Math...", "image1=[MAX_"+stackname+"] operation=Correlate image2=[Tempimg] result=Result do" );
+	wait(1000);
+	getRawStatistics( n, mn, mi, mx );
+	run( "Find Maxima...", "noise=" + d2s( mx, 9 ) + " output=[Point Selection]" );
+	getSelectionCoordinates(x, y);
+	close("Result");	
+	selectImage(stackname);
+	run( "Translate...", "x=" + ((height/2)-x[0]) + " y=" + ((height/2)-y[0]) + " interpolation=None stack" );
+	saveAs("tiff", outputdir+filename+"_"+hyblist[0]+"_hyb"+hyblist[hyb]+"_"+fov+"_aligned.tif");
+	rename(stackname);	
+	}
+	}
+	selectWindow(stackname);
+	run("Split Channels");
+	close(chnarray[0]+"-*");
+	close(chnarray[1]+"-*");
+	chnname = genechn+stackname;
+			
+	////Opening coords files////
+	if ((use_existing == true) && (File.exists(outputdir+filename+"_hyb"+hyblist[hyb]+".csv") == 1)){
+	print("Loading csv...");
+	open(outputdir+filename+"_hyb"+hyblist[hyb]+".csv");		
+		}
+	else{
+	print("Finding points...");
+	selectWindow(chnname);
+	run("Gaussian Blur 3D...", "x=2 y=2 z=2");	
+	run("3D Maxima Finder", "minimmum=0 radiusxy=1.50 radiusz=1.50 noise="+tolerance);
+	saveAs("Results", outputdir+filename+"_hyb"+hyblist[hyb]+".csv");		
+	}
+	if (hyb==0){
+		IJ.renameResults("Template");	
+	}
+	else{
+	IJ.renameResults(filename+"_hyb"+hyblist[hyb]+".csv",hyblist[hyb]+"Results");	
+	Table.create("Template-1");
+	header = "XYZV";
+	for (col=0; col<4; col++) {	
+		selectWindow("Template");	
+		copycol = Table.getColumn(substring(header, col, col+1));
+		selectWindow("Template-1");
+		Table.setColumn(substring(header, col, col+1), copycol);		
+	}
+	}		
+	close("MAX_"+chnname);
+	close("peaks");
+	}
+
+//////Matching peaks////
+print("Matching peaks!");
+for (hyb = 1; hyb < hyblist.length; hyb++){
+	IJ.renameResults(hyblist[hyb]+"Results", "Results");
+	selectWindow("Results");
+	Table.sort("X");
+	xcoord2array = Table.getColumn("X");	
+	selectWindow("Template-1");
+	for (row=0; row<Table.size; row++) {
+			zcoord = parseInt(Table.get("Z", row));				
+			xcoord = parseInt(Table.get("X", row));
+			ycoord = parseInt(Table.get("Y", row));
+			distance = newArray();
+			dist_ind = newArray();			
+			xcoordfilt = newArray();
+			for (coord=0; coord<xcoord2array.length; coord++){
+					xdist = abs(parseInt(xcoord2array[coord])-xcoord);
+					if (xdist < distfilter+1){						
+						xcoordfilt = Array.concat(xcoordfilt, coord);
+				}
+			}		
+			for (row2=0; row2<xcoordfilt.length; row2++) {
+				xcoord2 = getResult("X", xcoordfilt[row2]);
+				ycoord2 = getResult("Y", xcoordfilt[row2]);
+				zcoord2 = getResult("Z", xcoordfilt[row2]);		
+				eucdist = sqrt((xcoord-xcoord2)^2+(ycoord-ycoord2)^2);
+				if (eucdist < (distfilter+1)){
+					distance = Array.concat(distance, eucdist);	
+					dist_ind = Array.concat(dist_ind, xcoordfilt[row2]);		
+				}
+			}			
+			if (distance.length==0){
+				distance = Array.concat(distance, 1000);
+				dist_ind = Array.concat(dist_ind, 0);								
+			}
+			Array.sort(distance, dist_ind);													
+			selectWindow("Template-1");			
+			zrank = newArray(distance.length);
+			Array.fill(zrank, 1000);		
+			for (rank=0; rank<3 && rank<(distance.length); rank++){
+				comp_Z = parseInt(getResult("Z", dist_ind[rank]));		
+				zrank[rank] = abs(comp_Z-zcoord);
+			}
+			Array.sort(zrank, distance, dist_ind);
+			selZ = 	parseInt(getResult("Z", dist_ind[0]));	
+			selX = 	getResult("X", dist_ind[0]);
+			selY = 	getResult("Y", dist_ind[0]);
+			selectWindow("Template-1");
+    		Table.set("MATCHX_"+hyblist[hyb], row, selX);   
+    		Table.set("MATCHY_"+hyblist[hyb], row, selY);
+    		Table.set("MATCHZ_"+hyblist[hyb], row, selZ);
+    		Table.set("XYDistance_"+hyblist[hyb], row, distance[0]);
+    		Table.set("Zshift_"+hyblist[hyb], row, (selZ-zcoord));    		
+		}
+	close(hyblist[hyb]+"Results");
+	print("Finished "+hyblist[hyb]);
+}
+	selectWindow("Template-1");
+	Table.rename("Template-1", "Results");
+	saveAs("Results", outputdir+filename+".csv");
+	close("Template");
+IJ.renameResults("Results", "Selected Points");
+
+
+///////Plot graphs////
+print("Creating plots!");
+color = newArray("black","blue","magenta", "red","orange");
+selectWindow("Selected Points");
+rowind = newArray();
+choosept = true;
+row = 0;
+while (choosept == true){
+	count=0;
+	selectWindow("Selected Points");
+	for (hyb=1; hyb<color.length; hyb++){		
+		if (parseInt(Table.get("XYDistance_"+hyblist[hyb],row))<10){
+			count++;
+		}
+	}
+	if (count==4){
+		rowind = Array.concat(rowind, row);
+	}
+	if (rowind.length == reqplot){
+		choosept = false;
+	}
+	row++;
+	if (row == Table.size){
+		choosept = false;
+	}
+}
+for (pts=0; pts<rowind.length; pts++){
+selectWindow("Selected Points");
+x=parseInt(Table.get("X", rowind[pts]));
+y=parseInt(Table.get("Y", rowind[pts]));
+selectWindow(refstack);
+makeRectangle(x-1, y-1, 2, 2);
+run("Plot Z-axis Profile");
+for (hyb=1; hyb<color.length; hyb++) {
+selectWindow("Selected Points");
+newx = parseInt(Table.get("MATCHX_"+hyblist[hyb],rowind[pts]));
+newy = parseInt(Table.get("MATCHY_"+hyblist[hyb],rowind[pts]));
+selectWindow(genechn+"hyb"+hyblist[hyb]);
+makeRectangle(newx-1, newy-1, 2, 2);
+run("Plot Z-axis Profile");
+Plot.showValues();
+wait(100);
+selectWindow(refstack+"-"+(x-1)+"-"+(y-1));
+wait(10);
+Plot.add("Line", Table.getColumn("X0", "Results"), Table.getColumn("Y0", "Results"));
+Plot.setStyle(hyb, color[hyb]+",#9999ff,2.0,Line");
+Plot.setLimitsToFit();
+wait(100);
+run("Clear Results");
+selectWindow(genechn+"hyb"+hyblist[hyb]+"-"+(newx-1)+"-"+(newy-1));
+close();
+}
+selectWindow(refstack+"-"+(x-1)+"-"+(y-1));
+Plot.addLegend("hyb"+hyblist[0]+"\nhyb"+hyblist[1]+"\nhyb"+hyblist[2]+"\nhyb"+hyblist[3]+"\nhyb"+hyblist[4], "Auto");
+selectWindow(refstack+"-"+(x-1)+"-"+(y-1));
+setJustification("left");
+Plot.addText(gene+"_"+x+"_"+y, 1,0);
+selectWindow(refstack+"-"+(x-1)+"-"+(y-1));
+Plot.setXYLabels("Z", "Mean");
+//will not overwrite
+saveAs("Tiff", outputdir+"/Plots/"+gene+"/"+gene+"_"+x+"_"+y+".tif");
+close();
+print("Done with: "+pts);
+} 
+close("Selected Points");
+print("Done!");
+while (nImages>0) { 
+		selectImage(nImages); 
+        close(); 
+	}
+setBatchMode(false);
+exit();
+///////
